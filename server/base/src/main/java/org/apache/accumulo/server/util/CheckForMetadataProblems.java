@@ -25,17 +25,14 @@ import java.util.TreeSet;
 
 import org.apache.accumulo.core.client.AccumuloSecurityException;
 import org.apache.accumulo.core.client.Scanner;
-import org.apache.accumulo.core.client.impl.Writer;
 import org.apache.accumulo.core.data.Key;
 import org.apache.accumulo.core.data.KeyExtent;
-import org.apache.accumulo.core.data.Mutation;
 import org.apache.accumulo.core.data.Value;
 import org.apache.accumulo.core.metadata.MetadataTable;
+import org.apache.accumulo.core.metadata.RootTable;
 import org.apache.accumulo.core.metadata.schema.MetadataSchema;
 import org.apache.accumulo.core.metadata.schema.MetadataSchema.TabletsSection;
 import org.apache.accumulo.core.security.Authorizations;
-import org.apache.accumulo.core.security.Credentials;
-import org.apache.accumulo.core.tabletserver.thrift.ConstraintViolationException;
 import org.apache.accumulo.server.cli.ClientOpts;
 import org.apache.accumulo.server.conf.ServerConfiguration;
 import org.apache.accumulo.server.fs.VolumeManager;
@@ -85,12 +82,6 @@ public class CheckForMetadataProblems {
       if (broke) {
         everythingLooksGood = false;
       }
-      if (broke && opts.fix) {
-        KeyExtent ke = new KeyExtent(tabke);
-        ke.setPrevEndRow(lastEndRow);
-        MetadataTableUtil.updateTabletPrevEndRow(ke, new Credentials(opts.principal, opts.getToken()));
-        System.out.println("KE " + tabke + " has been repaired to " + ke);
-      }
       
       lastEndRow = tabke.getEndRow();
     }
@@ -100,7 +91,8 @@ public class CheckForMetadataProblems {
       sawProblems = true;
   }
   
-  public static void checkMetadataTableEntries(Opts opts, VolumeManager fs) throws Exception {
+  public static void checkMetadataAndRootTableEntries(String tableNameToCheck, Opts opts, VolumeManager fs) throws Exception {
+	System.out.println("Checking table: " + tableNameToCheck);
     Map<String,TreeSet<KeyExtent>> tables = new HashMap<String,TreeSet<KeyExtent>>();
     
     Scanner scanner;
@@ -108,7 +100,7 @@ public class CheckForMetadataProblems {
     if (opts.offline) {
       scanner = new OfflineMetadataScanner(ServerConfiguration.getSystemConfiguration(opts.getInstance()), fs);
     } else {
-      scanner = opts.getConnector().createScanner(MetadataTable.NAME, Authorizations.EMPTY);
+      scanner = opts.getConnector().createScanner(tableNameToCheck, Authorizations.EMPTY);
     }
     
     scanner.setRange(MetadataSchema.TabletsSection.getRange());
@@ -151,25 +143,13 @@ public class CheckForMetadataProblems {
         if (justLoc) {
           System.out.println("Problem at key " + entry.getKey());
           sawProblems = true;
-          if (opts.fix) {
-            Writer t = MetadataTableUtil.getMetadataTable(new Credentials(opts.principal, opts.getToken()));
-            Key k = entry.getKey();
-            Mutation m = new Mutation(k.getRow());
-            m.putDelete(k.getColumnFamily(), k.getColumnQualifier());
-            try {
-              t.update(m);
-              System.out.println("Deleted " + k);
-            } catch (ConstraintViolationException e) {
-              e.printStackTrace();
-            }
-          }
         }
         justLoc = true;
       }
     }
     
     if (count == 0) {
-      System.err.println("ERROR : " + MetadataTable.NAME + " table is empty");
+      System.err.println("ERROR : " + tableNameToCheck + " table is empty");
       sawProblems = true;
     }
     
@@ -179,13 +159,13 @@ public class CheckForMetadataProblems {
       checkTable(entry.getKey(), entry.getValue(), opts);
     }
     
+    if (!sawProblems) {
+    	System.out.println("No problems found");
+    }
     // end METADATA table sanity check
   }
   
   static class Opts extends ClientOpts {
-    @Parameter(names = "--fix", description = "best-effort attempt to fix problems found")
-    boolean fix = false;
-    
     @Parameter(names = "--offline", description = "perform the check on the files directly")
     boolean offline = false;
   }
@@ -193,9 +173,15 @@ public class CheckForMetadataProblems {
   public static void main(String[] args) throws Exception {
     Opts opts = new Opts();
     opts.parseArgs(CheckForMetadataProblems.class.getName(), args);
+    Opts dummyOpts = new Opts();
+    dummyOpts.auths=opts.auths;
+    dummyOpts.password=opts.password;
     
     VolumeManager fs = VolumeManagerImpl.get();
-    checkMetadataTableEntries(opts, fs);
+    
+    checkMetadataAndRootTableEntries(RootTable.NAME, dummyOpts, fs);
+    checkMetadataAndRootTableEntries(MetadataTable.NAME, opts, fs);
+    dummyOpts.stopTracing();
     opts.stopTracing();
     if (sawProblems)
       throw new RuntimeException();
