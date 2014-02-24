@@ -31,7 +31,7 @@ function usage
 # Start: Resolve Script Directory
 SOURCE="${BASH_SOURCE[0]}"
 while [ -h "$SOURCE" ]; do # resolve $SOURCE until the file is no longer a symlink
-	echo "SYMLINK?"
+        echo "SYMLINK?"
    bin="$( cd -P "$( dirname "$SOURCE" )" && pwd )"
    SOURCE="$(readlink "$SOURCE")"
    [[ $SOURCE != /* ]] && SOURCE="$bin/$SOURCE" # if $SOURCE was a relative symlink, we need to resolve it relative to the path where the symlink file was located
@@ -57,22 +57,22 @@ OVERRIDE="0"
 
 while [ "$1" != "" ]; do
     case $1 in
-	-d | --dir)		shift
-				CONF_DIR=$1
-				;;
-	-s | --size)		shift		
-				SIZE=$1
-				;;         
-        -n | --native)		TYPE=native
-                                ;;		
-	-j | --jvm)		TYPE=jvm
-				;;
-	-o | --override)	OVERRIDE="1"
-				;;
-	-v | --version)		shift
-				HADOOP_VERSION=$1
-				;;
-	-h | --help )           usage
+        -d | --dir)             shift
+                                CONF_DIR=$1
+                                ;;
+        -s | --size)            shift
+                                SIZE=$1
+                                ;;         
+        -n | --native)          TYPE=native
+                                ;;
+        -j | --jvm)             TYPE=jvm
+                                ;;
+        -o | --override)        OVERRIDE="1"
+                                ;;
+        -v | --version)         shift
+                                HADOOP_VERSION=$1
+                                ;;
+        -h | --help )           usage
                                 exit
                                 ;;
         * )                     usage
@@ -82,22 +82,22 @@ while [ "$1" != "" ]; do
 done
 
 while [ "${OVERRIDE}" == "0" ]; do
-	if [ -e "${CONF_DIR}/${ACCUMULO_ENV}" -o -e "${CONF_DIR}/${ACCUMULO_SITE}" ]; then
-		echo "Warning your current config files in ${CONF_DIR} will be overwritten!"
-		echo
-	   	echo "How would you like to proceed?:"
-	   	select CHOICE in 'Continue with overwrite' 'Specify new conf dir'; do
-	      	if [ "${CHOICE}" == 'Specify new conf dir' ]; then
-		 	echo -n "Please specifiy new conf directory: "
-			read CONF_DIR
-		else
-			OVERRIDE=1
-	      	fi
-	     	break
-	   done
-	else 
-		OVERRIDE=1
-	fi
+        if [ -e "${CONF_DIR}/${ACCUMULO_ENV}" -o -e "${CONF_DIR}/${ACCUMULO_SITE}" ]; then
+                echo "Warning your current config files in ${CONF_DIR} will be overwritten!"
+                echo
+                echo "How would you like to proceed?:"
+                select CHOICE in 'Continue with overwrite' 'Specify new conf dir'; do
+                   if [ "${CHOICE}" == 'Specify new conf dir' ]; then
+                      echo -n "Please specifiy new conf directory: "
+                      read CONF_DIR
+                   else
+                     OVERRIDE=1
+                   fi
+                   break
+                done
+        else 
+                OVERRIDE=1
+        fi
 done
 echo "Coppying configuration files to: ${CONF_DIR}"
 
@@ -187,9 +187,9 @@ if [ -z "${SIZE}" ]; then
       break
    done
 elif [ "${SIZE}" != "1GB" -a "${SIZE}" != "2GB" -a "${SIZE}" != "3GB" -a "${SIZE}" != "512MB" ]; then
-	echo "Invalid memory size"
-	echo "Supported sizes: '1GB' '2GB' '3GB' '512MB'"
-	exit 1
+        echo "Invalid memory size"
+        echo "Supported sizes: '1GB' '2GB' '3GB' '512MB'"
+        exit 1
 fi
 
 if [ -z "${TYPE}" ]; then
@@ -198,7 +198,7 @@ if [ -z "${TYPE}" ]; then
    select TYPENAME in Java Native; do
       if [ "${TYPENAME}" == "Native" ]; then
          TYPE="native"
-	 echo "Don't forget to build the native libraries using the bin/build_native_library.sh script"
+         echo "Don't forget to build the native libraries using the bin/build_native_library.sh script"
       elif [ "${TYPENAME}" == "Java" ]; then
          TYPE="jvm"
       fi
@@ -222,20 +222,20 @@ if [ -z "${HADOOP_VERSION}" ]; then
       break
    done
 elif [ "${HADOOP_VERSION}" != "1" -a "${HADOOP_VERSION}" != "2" ]; then
-	echo "Invalid Apache Hadoop version"
-	echo "Supported Apache Hadoop versions: '1' '2'"
-	exit 1
+        echo "Invalid Apache Hadoop version"
+        echo "Supported Apache Hadoop versions: '1' '2'"
+        exit 1
 fi
 
 if [ -z ${SIZE} ]; then
-	echo "Invalid size configuration option"
-	exit 1
+        echo "Invalid size configuration option"
+        exit 1
 elif [ -z ${TYPE} ]; then
-	echo "Invalide type configuration option"
-	exit 1
+        echo "Invalide type configuration option"
+        exit 1
 elif [ -z ${HADOOP_VERSION} ]; then
-	echo "Invalid Accumulo Hadoop version configuration option"
-	exit 1
+        echo "Invalid Accumulo Hadoop version configuration option"
+        exit 1
 fi
 
 TSERVER="${TYPE}_${SIZE}_tServer"
@@ -260,18 +260,17 @@ sed -e "s/\${memMapMax}/${!MEMORY_MAP_MAX}/" -e "s/\${nativeEnabled}/${!NATIVE}/
 
 #Configure for hadoop 2
 if [ "$HADOOP_VERSION" == "2" ]; then
-	sed -e 's/^test -z \"$HADOOP_CONF_DIR\"/#test -z \"$HADOOP_CONF_DIR\"/' -e 's/^# test -z "$HADOOP_CONF_DIR"/test -z \"$HADOOP_CONF_DIR\"/' ${CONF_DIR}/$ACCUMULO_ENV > temp
-	mv temp ${CONF_DIR}/$ACCUMULO_ENV
+        sed -e 's/^test -z \"$HADOOP_CONF_DIR\"/#test -z \"$HADOOP_CONF_DIR\"/' -e 's/^# test -z "$HADOOP_CONF_DIR"/test -z \"$HADOOP_CONF_DIR\"/' ${CONF_DIR}/$ACCUMULO_ENV > temp
+        mv temp ${CONF_DIR}/$ACCUMULO_ENV
 
-	ACCUMULO_SITE_INFO="\$HADOOP_PREFIX/share/hadoop/common/.*.jar,\n\t\$HADOOP_PREFIX/share/hadoop/common/lib/.*.jar,\n\t\$HADOOP_PREFIX/share/hadoop/hdfs/.*.jar,\n\t\$HADOOP_PREFIX/share/hadoop/mapreduce/.*.jar,\n\t\$HADOOP_PREFIX/share/hadoop/yarn/.*.jar,\n\t/usr/lib/hadoop/.*.jar,\n\t/usr/lib/hadoop/lib/.*.jar,\n\t/usr/lib/hadoop-hdfs/.*.jar,\n\t/usr/lib/hadoop-mapreduce/.*.jar,\n\t/usr/lib/hadoop-yarn/.*.jar,\n"
+        ACCUMULO_SITE_INFO="\$HADOOP_PREFIX/share/hadoop/common/.*.jar,\n\t\$HADOOP_PREFIX/share/hadoop/common/lib/.*.jar,\n\t\$HADOOP_PREFIX/share/hadoop/hdfs/.*.jar,\n\t\$HADOOP_PREFIX/share/hadoop/mapreduce/.*.jar,\n\t\$HADOOP_PREFIX/share/hadoop/yarn/.*.jar,\n\t/usr/lib/hadoop/.*.jar,\n\t/usr/lib/hadoop/lib/.*.jar,\n\t/usr/lib/hadoop-hdfs/.*.jar,\n\t/usr/lib/hadoop-mapreduce/.*.jar,\n\t/usr/lib/hadoop-yarn/.*.jar,\n"
 
-	sed -e "/\$ACCUMULO_HOME\/server\/target\/classes\/,/ i $ACCUMULO_SITE_INFO" ${CONF_DIR}/$ACCUMULO_SITE > temp
-	
-	mv temp  ${CONF_DIR}/$ACCUMULO_SITE
+        sed -e "/\$ACCUMULO_HOME\/server\/target\/classes\/,/ i $ACCUMULO_SITE_INFO" ${CONF_DIR}/$ACCUMULO_SITE > temp
+        mv temp  ${CONF_DIR}/$ACCUMULO_SITE
 fi
 
 
 if [ "${TYPE}" == "native" ]; then
-	echo -e "Please remember to compile the native libraries using the bin/build_native_library.sh script and to set the LD_LIBRARY_PATH variable in the conf/accumulo-env.sh script"
+        echo -e "Please remember to compile the native libraries using the bin/build_native_library.sh script and to set the LD_LIBRARY_PATH variable in the conf/accumulo-env.sh script"
 fi
 echo "Setup complete"

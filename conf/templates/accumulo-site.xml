@@ -18,9 +18,8 @@
 <?xml-stylesheet type="text/xsl" href="configuration.xsl"?>
 
 <configuration>
-  <!-- Put your site-specific accumulo configurations here. The available configuration values along with their defaults are documented in docs/config.html Unless 
+  <!-- Put your site-specific accumulo configurations here. The available configuration values along with their defaults are documented in docs/config.html Unless
     you are simply testing at your workstation, you will most definitely need to change the three entries below. -->
-
   <property>
     <name>instance.zookeeper.host</name>
     <value>localhost:2181</value>
@@ -30,8 +29,8 @@
   <property>
     <name>logger.dir.walog</name>
     <value>walogs</value>
-    <description>The property only needs to be set if upgrading from 1.4 which used to store write-ahead logs on the local 
-      filesystem. In 1.5 write-ahead logs are stored in DFS.  When 1.5 is started for the first time it will copy any 1.4 
+    <description>The property only needs to be set if upgrading from 1.4 which used to store write-ahead logs on the local
+      filesystem. In 1.5 write-ahead logs are stored in DFS.  When 1.5 is started for the first time it will copy any 1.4
       write ahead logs into DFS.  It is possible to specify a comma-separated list of directories.
     </description>
   </property>
@@ -46,12 +45,10 @@
       and then update this file.
     </description>
   </property>
-
   <property>
     <name>tserver.memory.maps.max</name>
     <value>${memMapMax}</value>
   </property>
-
   <property>
     <name>tserver.memory.maps.native.enabled</name>
     <value>${nativeEnabled}</value>

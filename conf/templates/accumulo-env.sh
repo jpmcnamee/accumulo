@@ -23,7 +23,7 @@
 ### test -z "$JAVA_HOME" && export JAVA_HOME=/usr/local/lib/jdk-1.6.0
 ###
 ###
-### Note that the -Xmx -Xms settings below require substantial free memory: 
+### Note that the -Xmx -Xms settings below require substantial free memory:
 ### you may want to use smaller values, especially when running everything
 ### on a single machine.
 ###
@@ -49,7 +49,7 @@ then
 fi
 test -z "$ACCUMULO_TSERVER_OPTS" && export ACCUMULO_TSERVER_OPTS="${POLICY} ${tServerHigh tServerLow} "
 test -z "$ACCUMULO_MASTER_OPTS"  && export ACCUMULO_MASTER_OPTS="${POLICY} ${masterHigh masterLow}"
-test -z "$ACCUMULO_MONITOR_OPTS" && export ACCUMULO_MONITOR_OPTS="${POLICY} ${monitorHigh monitorLow}" 
+test -z "$ACCUMULO_MONITOR_OPTS" && export ACCUMULO_MONITOR_OPTS="${POLICY} ${monitorHigh monitorLow}"
 test -z "$ACCUMULO_GC_OPTS"      && export ACCUMULO_GC_OPTS="${gcHigh gcLow}"
 test -z "$ACCUMULO_GENERAL_OPTS" && export ACCUMULO_GENERAL_OPTS="-XX:+UseConcMarkSweepGC -XX:CMSInitiatingOccupancyFraction=75"
 test -z "$ACCUMULO_OTHER_OPTS"   && export ACCUMULO_OTHER_OPTS="${otherHigh otherLow}"
