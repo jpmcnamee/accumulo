@@ -383,7 +383,7 @@
                         <type>perm</type>
                         <prefix>/usr/lib/accumulo/conf</prefix>
                       </mapper>
-                      <includes>accumulo.policy.example,examples/**</includes>
+                      <includes>templates/**</includes>
                       <excludes>**/.svn/**</excludes>
                     </data>
                   </dataSet>
