@@ -1,0 +1,49 @@
+Upgrade Test Framework brief overview.
+
+To run upgrade tests you only have to run ./upgrade_test.sh
+for options run: ./upgrade_test.sh --help
+
+The purpose of this script is to test upgrading from accumulo 1.5.* to 1.6.* (or 1.6.* to 1.7.*)
+This script will unpack and set up an instance of hadoop and zookeeper as well as
+the two accumulo files.
+    (Currently only tested on Hadoop versions 2.2.0 and 1.2.1 and Zookeeper version 3.4.5)
+
+
+This script expects to be given 4 tar files (hadoop zookeeper, old accumulo, new accumulo)
+    ex) ./upgrade_test.sh -h hadoop-2.2.0.tar.gz -z zookeeper-3.4.5.tar.gz
+         -o accumulo-1.5.1-SNAPSHOT-bin.tar.gz -n accumulo-1.6.0-SNAPSHOT-bin.tar.gz
+
+*or
+
+This script expects the HADOOP_PREFIX and ZOOKEEPER_HOME env variables to be set as well as the
+2 tar files (for the old accumulo and new accumulo).
+    ex) ./upgrade_test.sh -o accumulo-1.5.1-SNAPSHOT-bin.tar.gz -n accumulo-1.6.0-SNAPSHOT-bin.tar.gz
+
+
+The tar files are extracted in a newly created tmp/ folder. You can change the name/location
+of this folder by setting the -d flag.
+    ex) ./upgrade_test.sh -d /path/to/your/tmpdir
+
+Once all the files have been set up and configured hadoop and zookeeper are started,
+then the tests are run, after the tests are run hadoop and zookeeper will be shut down.
+    - Each test is run twice, once with a normal clean shutdown and once with a dirty
+      shutdown.
+
+* The tests are partially self verifying in that they rely on the java files to fail and throw an exeption
+  if something goes wrong. If this occurs then the script will stop, shutdown hadoop, zookeeper, and accumulo
+  as well as print a failure message to the consol. If all java files return normally the script assumes that
+  everything went as planned and will print a success message to the consol.
+    - The outpout of the tests will be directed to the tmp/testResults file
+    - Any error messages from the tests will be directed to the tmp/errorTestResults
+    - For full confidence you should manually check test results file and the error test results file
+
+Since extracting and configuring hadoop zookeeper and accumulo can be time consuming
+this script will attempt to skip those steps if it sees that hadoop zookeeper and
+accumulo have already been extracted and configured in their correct places.
+ (Usfull if you are running this script multiple times and only care about the
+  tests and not the setup)
+
+The script will automatically scan the upgrade/tests/ directory and automatically run any upgrade tests
+(files ending in .sh) that it finds.
+    - Each upgrade test is expected to have two phases, a pre-test and a post-test phase
+    - The main upgrade_test.sh script will handle starting and stopping accumulo versions
