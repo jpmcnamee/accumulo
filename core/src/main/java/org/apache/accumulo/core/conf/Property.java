@@ -267,6 +267,7 @@ public enum Property {
       "The number of threads for the distributed work queue. These threads are used for copying failed bulk files."),
   TSERV_WAL_SYNC("tserver.wal.sync", "true", PropertyType.BOOLEAN,
       "Use the SYNC_BLOCK create flag to sync WAL writes to disk. Prevents problems recovering from sudden system resets."),
+  TSERV_WAL_COMPRESSION("tserver.wal.compression", "true", PropertyType.BOOLEAN, "Use the wal compression flag to compress the wal for better performance"),
 
   // properties that are specific to logger server behavior
   LOGGER_PREFIX("logger.", null, PropertyType.PREFIX, "Properties in this category affect the behavior of the write-ahead logger servers"),
