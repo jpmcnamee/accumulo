@@ -1,0 +1,858 @@
+From 9cd4f7a14106390746a0d7508a3f98a6b288384a Mon Sep 17 00:00:00 2001
+From: John McNamee <jpm34@terpmail.umd.edu>
+Date: Wed, 21 May 2014 10:30:40 -0400
+Subject: [PATCH] ACCUMULO-2632 explore the effects of using compression in the WAL
+
+Proposed implemenation of snappy compression in the WAL
+---
+ .../org/apache/accumulo/core/conf/Property.java    |    1 +
+ .../tserver/log/DecompressingInputStream.java      |  157 +++++++++++
+ .../org/apache/accumulo/tserver/log/DfsLogger.java |  286 +++++++++++++-------
+ .../tserver/log/DecompressingInputStreamTest.java  |  172 ++++++++++++
+ 4 files changed, 518 insertions(+), 98 deletions(-)
+ create mode 100644 server/tserver/src/main/java/org/apache/accumulo/tserver/log/DecompressingInputStream.java
+ create mode 100644 server/tserver/src/test/java/org/apache/accumulo/tserver/log/DecompressingInputStreamTest.java
+
+diff --git a/core/src/main/java/org/apache/accumulo/core/conf/Property.java b/core/src/main/java/org/apache/accumulo/core/conf/Property.java
+index 62b0a33..a169a91 100644
+--- a/core/src/main/java/org/apache/accumulo/core/conf/Property.java
++++ b/core/src/main/java/org/apache/accumulo/core/conf/Property.java
+@@ -267,6 +267,7 @@ public enum Property {
+       "The number of threads for the distributed work queue. These threads are used for copying failed bulk files."),
+   TSERV_WAL_SYNC("tserver.wal.sync", "true", PropertyType.BOOLEAN,
+       "Use the SYNC_BLOCK create flag to sync WAL writes to disk. Prevents problems recovering from sudden system resets."),
++  TSERV_WAL_COMPRESSION("tserver.wal.compression", "true", PropertyType.BOOLEAN, "Use the wal compression flag to compress the wal for better performance"),
+ 
+   // properties that are specific to logger server behavior
+   LOGGER_PREFIX("logger.", null, PropertyType.PREFIX, "Properties in this category affect the behavior of the write-ahead logger servers"),
+diff --git a/server/tserver/src/main/java/org/apache/accumulo/tserver/log/DecompressingInputStream.java b/server/tserver/src/main/java/org/apache/accumulo/tserver/log/DecompressingInputStream.java
+new file mode 100644
+index 0000000..f6c6281
+--- /dev/null
++++ b/server/tserver/src/main/java/org/apache/accumulo/tserver/log/DecompressingInputStream.java
+@@ -0,0 +1,157 @@
++/*
++ * Licensed to the Apache Software Foundation (ASF) under one or more
++ * contributor license agreements.  See the NOTICE file distributed with
++ * this work for additional information regarding copyright ownership.
++ * The ASF licenses this file to You under the Apache License, Version 2.0
++ * (the "License"); you may not use this file except in compliance with
++ * the License.  You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++package org.apache.accumulo.tserver.log;
++
++import java.io.DataInputStream;
++import java.io.EOFException;
++import java.io.FilterInputStream;
++import java.io.IOException;
++import java.io.InputStream;
++
++import org.xerial.snappy.Snappy;
++
++public class DecompressingInputStream extends DataInputStream {
++
++  /**
++   * @param in
++   */
++  public DecompressingInputStream(InputStream in) {
++    super(new DecompressingStream(in));
++  }
++
++}
++
++/*
++ * Maintains an internal buffer and position counter. As the 
++ * counter reaches the end of the buffer the next chunk of compressed
++ * bytes is read from the underlying input stream.
++ */
++class DecompressingStream extends FilterInputStream {
++  byte[] buffer;
++  int bufferPos;
++
++  public DecompressingStream(InputStream in) {
++    super(in);
++    buffer = new byte[0];
++    bufferPos = 0;
++  }
++
++  public void checkBuffer() throws IOException {
++    if (bufferPos == buffer.length) {
++
++      int chunk = readInt(in);
++      
++      byte[] compressed = new byte[chunk];
++
++      int bytesRead = readCompressed(compressed, in);
++      
++      //If the entire chunk could not be read it cannot be
++      // uncompressed and is presumed to be unrecoverable
++      if (bytesRead < chunk) {
++        throw new EOFException();
++      }
++      
++      buffer = Snappy.uncompress(compressed);
++      
++      bufferPos = 0;
++    }
++  }
++
++  private int readInt(InputStream input) throws IOException {
++    int ch1 = input.read();
++
++    int ch2 = input.read();
++
++    int ch3 = input.read();
++
++    int ch4 = input.read();
++
++    if ((ch1 | ch2 | ch3 | ch4) < 0) {
++      throw new EOFException();
++    }
++    return ((ch1 << 24) + (ch2 << 16) + (ch3 << 8) + (ch4 << 0));
++  }
++
++  @Override
++  public int read() throws IOException {
++    try {
++      checkBuffer();
++    } catch (EOFException e) {
++      return -1;
++    }
++    int num = buffer[bufferPos] & 0xff;
++    bufferPos++;
++    return num;
++  }
++
++  private int readCompressed(byte[] b, InputStream input) throws IOException {
++    return readCompressed(b, 0, b.length, input);
++  }
++
++  private int readCompressed(byte b[], int off, int len, InputStream input) throws IOException {
++    int read = 0;
++    int total = 0;
++    
++    // continue to read while the total bytes read is less then the expected len
++    do {
++      read = input.read(b, (off + total), (len - total));
++      if (read < 0) {
++        //unexpected end of file
++        break;
++      } else {
++        total += read;
++      }
++    } while (total < len);
++    
++    return total;
++
++  }
++
++  @Override
++  public int read(byte b[], int off, int len) throws IOException {
++    if (b == null) {
++      throw new NullPointerException();
++    } else if (off < 0 || len < 0 || len > b.length - off) {
++      throw new IndexOutOfBoundsException();
++    } else if (len == 0) {
++      return 0;
++    }
++    try {
++      checkBuffer();
++    } catch (IOException e) {
++      return -1; // end of file
++    }
++    int bytesCopied = 0, bytesToRead = 0, destPos = off;
++    boolean endOfFile = false;
++    while (bytesCopied < len && !endOfFile) {
++      try {
++        checkBuffer();
++        bytesToRead = buffer.length - bufferPos;
++        bytesToRead = bytesToRead < len ? bytesToRead : len;
++        destPos += bytesCopied;
++        System.arraycopy(buffer, bufferPos, b, destPos, bytesToRead);
++        bufferPos += bytesToRead;
++        bytesCopied += bytesToRead;
++      } catch (IOException e) {
++        endOfFile = true; // end of file
++      }
++    }
++    return bytesCopied;
++
++  }
++
++}
+diff --git a/server/tserver/src/main/java/org/apache/accumulo/tserver/log/DfsLogger.java b/server/tserver/src/main/java/org/apache/accumulo/tserver/log/DfsLogger.java
+index bfa51d3..4107114 100644
+--- a/server/tserver/src/main/java/org/apache/accumulo/tserver/log/DfsLogger.java
++++ b/server/tserver/src/main/java/org/apache/accumulo/tserver/log/DfsLogger.java
+@@ -22,13 +22,12 @@ import static org.apache.accumulo.tserver.logger.LogEvents.DEFINE_TABLET;
+ import static org.apache.accumulo.tserver.logger.LogEvents.MANY_MUTATIONS;
+ import static org.apache.accumulo.tserver.logger.LogEvents.OPEN;
+ 
++import java.io.ByteArrayOutputStream;
+ import java.io.DataInputStream;
+ import java.io.DataOutputStream;
+ import java.io.IOException;
+ import java.io.OutputStream;
+-import java.lang.reflect.InvocationTargetException;
+ import java.lang.reflect.Method;
+-import java.nio.channels.ClosedChannelException;
+ import java.nio.charset.StandardCharsets;
+ import java.util.ArrayList;
+ import java.util.Arrays;
+@@ -62,6 +61,7 @@ import org.apache.hadoop.fs.FSDataInputStream;
+ import org.apache.hadoop.fs.FSDataOutputStream;
+ import org.apache.hadoop.fs.Path;
+ import org.apache.log4j.Logger;
++import org.xerial.snappy.Snappy;
+ 
+ import com.google.common.base.Joiner;
+ 
+@@ -73,8 +73,11 @@ public class DfsLogger {
+   // Package private so that LogSorter can find this
+   static final String LOG_FILE_HEADER_V2 = "--- Log File Header (v2) ---";
+   static final String LOG_FILE_HEADER_V3 = "--- Log File Header (v3) ---";
+-
++  
++  static final String LOG_COMPRESSION_HEADER = "File Compressed";
++  
+   private static Logger log = Logger.getLogger(DfsLogger.class);
++  
+ 
+   public static class LogClosedException extends IOException {
+     private static final long serialVersionUID = 1L;
+@@ -120,23 +123,30 @@ public class DfsLogger {
+   }
+ 
+   private final LinkedBlockingQueue<DfsLogger.LogWork> workQueue = new LinkedBlockingQueue<DfsLogger.LogWork>();
+-
++  
+   private final Object closeLock = new Object();
+ 
+-  private static final DfsLogger.LogWork CLOSED_MARKER = new DfsLogger.LogWork(null);
++  private static final DfsLogger.LogWork CLOSED_MARKER = new DfsLogger.LogWork(null, false);
+ 
+   private static final LogFileValue EMPTY = new LogFileValue();
+-
++  
+   private boolean closed = false;
++  private boolean useCompression;
++  
++  private Thread flushingThread;
+ 
+   private class LogSyncingTask implements Runnable {
+ 
+     @Override
+     public void run() {
+       ArrayList<DfsLogger.LogWork> work = new ArrayList<DfsLogger.LogWork>();
++      
++      boolean sawClosedMarker = false;
++     
+       while (true) {
+         work.clear();
+-
++        
++        
+         try {
+           work.add(workQueue.take());
+         } catch (InterruptedException ex) {
+@@ -144,36 +154,30 @@ public class DfsLogger {
+         }
+         workQueue.drainTo(work);
+ 
+-        synchronized (closeLock) {
+-          if (!closed) {
+-            try {
+-              sync.invoke(logFile);
+-            } catch (Exception ex) {
+-              log.warn("Exception syncing " + ex);
+-              for (DfsLogger.LogWork logWork : work) {
+-                logWork.exception = ex;
+-              }
+-            }
+-          } else {
+-            for (DfsLogger.LogWork logWork : work) {
+-              logWork.exception = new LogClosedException();
+-            }
++        try {
++
++          encryptingLogFile.flush();
++          sync.invoke(logFile);
++
++        } catch (Exception ex) {
++          log.warn("Exception syncing " + ex);
++          for (DfsLogger.LogWork logWork : work) {
++            logWork.exception = ex;
+           }
+         }
+-
+-        boolean sawClosedMarker = false;
+-        for (DfsLogger.LogWork logWork : work)
+-          if (logWork == CLOSED_MARKER)
++       
++        for (DfsLogger.LogWork logWork : work) {
++          if (logWork == CLOSED_MARKER) {
+             sawClosedMarker = true;
+-          else
++          } else {
+             logWork.latch.countDown();
+-
+-        if (sawClosedMarker) {
+-          synchronized (closeLock) {
+-            closeLock.notifyAll();
++            logWork.cleanUp();
+           }
++        }
++        if (sawClosedMarker) {
+           break;
+         }
++
+       }
+     }
+   }
+@@ -181,9 +185,66 @@ public class DfsLogger {
+   static class LogWork {
+     CountDownLatch latch;
+     volatile Exception exception;
+-
+-    public LogWork(CountDownLatch latch) {
++    DataOutputStream out;
++    ByteArrayOutputStream dataOut;
++    byte[] data = null;
++    boolean compress;
++    
++    public LogWork(CountDownLatch latch, boolean compress) {
+       this.latch = latch;
++      if (latch != null) {
++        this.dataOut = new ByteArrayOutputStream();
++        this.out = new DataOutputStream(this.dataOut);
++      }
++      this.compress = compress;
++    }
++    
++    public DataOutputStream getDataOutputStream() {
++        return out;
++    }
++    public byte[] getData() {
++      return data;
++    }
++    public boolean hasData() {
++      if (data == null) {
++        return false;
++      } else {
++        return true;
++      }
++    }
++    public void cleanUp() {
++      data = null;
++    }
++    public void ready() {
++      try {
++        if (out != null && dataOut != null) {
++         
++          out.close();
++          dataOut.close();
++          if (compress) {
++            byte[] predata = dataOut.toByteArray();
++            
++            byte[] compressed = Snappy.compress(predata);
++            //write the length of the compressed array using the DataOutputStream writeInt() method
++            int blockLength = compressed.length;
++            data = new byte[blockLength + 4];
++            data[0] = (byte) ((blockLength >>> 24) & 0xFF);
++            data[1] = (byte) ((blockLength >>> 16) & 0xFF);
++            data[2] = (byte) ((blockLength >>>  8) & 0xFF);
++            data[3] = (byte) ((blockLength >>>  0) & 0xFF);
++            System.arraycopy(compressed, 0, data, 4, blockLength);
++            
++            predata = null;
++            compressed = null;
++          } else {
++            data = dataOut.toByteArray();
++          }
++          out = null;
++          dataOut = null;
++        }
++      } catch (IOException e) {
++        log.error("Error cleaning up work obj", e);
++      }
+     }
+   }
+ 
+@@ -233,7 +294,7 @@ public class DfsLogger {
+   private DataOutputStream encryptingLogFile = null;
+   private Method sync;
+   private String logPath;
+-
++  
+   public DfsLogger(ServerResources conf) throws IOException {
+     this.conf = conf;
+   }
+@@ -243,10 +304,13 @@ public class DfsLogger {
+     this.logPath = filename;
+   }
+ 
++
+   public static DFSLoggerInputStreams readHeaderAndReturnStream(VolumeManager fs, Path path, AccumuloConfiguration conf) throws IOException {
+     FSDataInputStream input = fs.open(path);
+-    DataInputStream decryptingInput = null;
+-
++    DataInputStream decryptingInput = null, tmpInput;
++    
++    byte[] compressed = DfsLogger.LOG_COMPRESSION_HEADER.getBytes();
++    byte[] compressedBuffer = new byte[compressed.length];
+     byte[] magic = DfsLogger.LOG_FILE_HEADER_V3.getBytes();
+     byte[] magicBuffer = new byte[magic.length];
+     input.readFully(magicBuffer);
+@@ -263,14 +327,23 @@ public class DfsLogger {
+       params = cryptoModule.getDecryptingInputStream(params);
+ 
+       if (params.getPlaintextInputStream() instanceof DataInputStream) {
+-        decryptingInput = (DataInputStream) params.getPlaintextInputStream();
++        tmpInput = (DataInputStream) params.getPlaintextInputStream();
+       } else {
+-        decryptingInput = new DataInputStream(params.getPlaintextInputStream());
++        tmpInput = new DataInputStream(params.getPlaintextInputStream());
++      }
++      
++      //If Log file has been compressed wrap the decryptingInputStream in a DecompressingInputStream
++      input.readFully(compressedBuffer);
++      if (!Arrays.equals(compressed, compressedBuffer)) {
++        input.seek(input.getPos() - compressed.length);
++        decryptingInput = tmpInput;
++      } else {
++        decryptingInput = new DecompressingInputStream(tmpInput);
+       }
+     } else {
+       input.seek(0);
+       byte[] magicV2 = DfsLogger.LOG_FILE_HEADER_V2.getBytes();
+-      byte[] magicBufferV2 = new byte[magicV2.length];
++      byte[] magicBufferV2 = new byte[magic.length];
+       input.readFully(magicBufferV2);
+ 
+       if (Arrays.equals(magicBufferV2, magicV2)) {
+@@ -300,7 +373,7 @@ public class DfsLogger {
+           CryptoModuleParameters params = CryptoModuleFactory.createParamsObjectFromAccumuloConfiguration(conf);
+ 
+           input.seek(0);
+-          input.readFully(magicBufferV2);
++          input.readFully(magicBuffer);
+           params.setEncryptedInputStream(input);
+ 
+           params = cryptoModule.getDecryptingInputStream(params);
+@@ -340,7 +413,9 @@ public class DfsLogger {
+         logFile = fs.createSyncable(new Path(logPath), 0, replication, blockSize);
+       else
+         logFile = fs.create(new Path(logPath), true, 0, replication, blockSize);
+-
++      
++      useCompression = conf.getConfiguration().getBoolean(Property.TSERV_WAL_COMPRESSION);
++      
+       try {
+         NoSuchMethodException e = null;
+         try {
+@@ -363,10 +438,10 @@ public class DfsLogger {
+       // Initialize the crypto operations.
+       org.apache.accumulo.core.security.crypto.CryptoModule cryptoModule = org.apache.accumulo.core.security.crypto.CryptoModuleFactory.getCryptoModule(conf
+           .getConfiguration().get(Property.CRYPTO_MODULE_CLASS));
+-
++      
+       // Initialize the log file with a header and the crypto params used to set up this log file.
+       logFile.write(LOG_FILE_HEADER_V3.getBytes(StandardCharsets.UTF_8));
+-
++      log.info("File opened: " + filename);
+       CryptoModuleParameters params = CryptoModuleFactory.createParamsObjectFromAccumuloConfiguration(conf.getConfiguration());
+ 
+       NoFlushOutputStream nfos = new NoFlushOutputStream(logFile);
+@@ -376,10 +451,15 @@ public class DfsLogger {
+       // so that that crypto module can re-read its own parameters.
+ 
+       logFile.writeUTF(conf.getConfiguration().get(Property.CRYPTO_MODULE_CLASS));
+-
++      
+       params = cryptoModule.getEncryptingOutputStream(params);
+       OutputStream encipheringOutputStream = params.getEncryptedOutputStream();
+-
++      
++      //If the Log entries are going to be compressed record that this file is using compression
++      if (useCompression) {
++        logFile.write(LOG_COMPRESSION_HEADER.getBytes(StandardCharsets.UTF_8));
++      }
++      
+       // If the module just kicks back our original stream, then just use it, don't wrap it in
+       // another data OutputStream.
+       if (encipheringOutputStream == nfos) {
+@@ -389,13 +469,21 @@ public class DfsLogger {
+         log.debug("Enciphering found, wrapping in DataOutputStream");
+         encryptingLogFile = new DataOutputStream(encipheringOutputStream);
+       }
+-
++      
++      DfsLogger.LogWork work = new DfsLogger.LogWork(new CountDownLatch(1), useCompression);
++      
+       LogFileKey key = new LogFileKey();
+       key.event = OPEN;
+       key.tserverSession = filename;
+       key.filename = filename;
+-      write(key, EMPTY);
++      write(work, key, EMPTY);
++      work.ready();
++      if (work.hasData()) {
++        encryptingLogFile.write(work.getData());
++        encryptingLogFile.flush();
++      }
+       sync.invoke(logFile);
++      work.cleanUp();
+       log.debug("Got new write-ahead log: " + this);
+     } catch (Exception ex) {
+       if (logFile != null)
+@@ -405,9 +493,9 @@ public class DfsLogger {
+       throw new IOException(ex);
+     }
+ 
+-    Thread t = new Daemon(new LogSyncingTask());
+-    t.setName("Accumulo WALog thread " + toString());
+-    t.start();
++    flushingThread = new Daemon(new LogSyncingTask());
++    flushingThread.setName("Accumulo WALog thread " + toString());
++    flushingThread.start();
+   }
+ 
+   @Override
+@@ -423,7 +511,7 @@ public class DfsLogger {
+   }
+ 
+   public void close() throws IOException {
+-
++   
+     synchronized (closeLock) {
+       if (closed)
+         return;
+@@ -433,25 +521,31 @@ public class DfsLogger {
+       // to process... so nothing should be left waiting for the background
+       // thread to do work
+       closed = true;
+-      workQueue.add(CLOSED_MARKER);
+-      while (!workQueue.isEmpty())
+-        try {
+-          closeLock.wait();
+-        } catch (InterruptedException e) {
+-          log.info("Interrupted");
+-        }
++    }
++    
++    workQueue.add(CLOSED_MARKER);
++
++    try {
++      //when the flushing thread terminates then finish closing the Log file
++      flushingThread.join();
++    } catch (InterruptedException e) {
++      log.info("Interrupted");
+     }
+ 
+     if (encryptingLogFile != null)
+       try {
+         logFile.close();
++        logFile = null;
+       } catch (IOException ex) {
+         log.error(ex);
+         throw new LogClosedException();
+       }
++
+   }
+ 
+-  public synchronized void defineTablet(int seq, int tid, KeyExtent tablet) throws IOException {
++  public void defineTablet(int seq, int tid, KeyExtent tablet) throws IOException {
++    DfsLogger.LogWork work = new DfsLogger.LogWork(new CountDownLatch(1), useCompression);
++    
+     // write this log to the METADATA table
+     final LogFileKey key = new LogFileKey();
+     key.event = DEFINE_TABLET;
+@@ -459,33 +553,29 @@ public class DfsLogger {
+     key.tid = tid;
+     key.tablet = tablet;
+     try {
+-      write(key, EMPTY);
+-      sync.invoke(logFile);
++      write(work, key, EMPTY);
++      work.ready();
++      if (work.hasData()) {
++        encryptingLogFile.write(work.getData());
++        encryptingLogFile.flush();
++      }
+     } catch (IllegalArgumentException e) {
+       log.error("Signature of sync method changed. Accumulo is likely incompatible with this version of Hadoop.");
+       throw new RuntimeException(e);
+-    } catch (IllegalAccessException e) {
+-      log.error("Could not invoke sync method due to permission error.");
+-      throw new RuntimeException(e);
+-    } catch (InvocationTargetException e) {
+-      Throwable cause = e.getCause();
+-      if (cause instanceof IOException) {
+-        throw (IOException) cause;
+-      } else if (cause instanceof RuntimeException) {
+-        throw (RuntimeException) cause;
+-      } else if (cause instanceof Error) {
+-        throw (Error) cause;
+-      } else {
+-        // Cause is null, or some other checked exception that was added later.
+-        throw new RuntimeException(e);
++    }
++    synchronized (closeLock) {
++      if (closed) {
++        throw new LogClosedException();
+       }
++      workQueue.add(work);
+     }
+   }
+-
+-  private synchronized void write(LogFileKey key, LogFileValue value) throws IOException {
+-    key.write(encryptingLogFile);
+-    value.write(encryptingLogFile);
+-    encryptingLogFile.flush();
++  
++  private void write(DfsLogger.LogWork work, LogFileKey key, LogFileValue value) throws IOException {
++    
++    key.write(work.getDataOutputStream());
++    value.write(work.getDataOutputStream());
++    
+   }
+ 
+   public LoggerOperation log(int seq, int tid, Mutation mutation) throws IOException {
+@@ -493,29 +583,29 @@ public class DfsLogger {
+   }
+ 
+   private LoggerOperation logFileData(List<Pair<LogFileKey,LogFileValue>> keys) throws IOException {
+-    DfsLogger.LogWork work = new DfsLogger.LogWork(new CountDownLatch(1));
+-    synchronized (DfsLogger.this) {
+-      try {
+-        for (Pair<LogFileKey,LogFileValue> pair : keys) {
+-          write(pair.getFirst(), pair.getSecond());
+-        }
+-      } catch (ClosedChannelException ex) {
+-        throw new LogClosedException();
+-      } catch (Exception e) {
+-        log.error(e, e);
+-        work.exception = e;
++    DfsLogger.LogWork work = new DfsLogger.LogWork(new CountDownLatch(1), useCompression);
++
++    try {
++      for (Pair<LogFileKey,LogFileValue> pair : keys) {
++        write(work, pair.getFirst(), pair.getSecond());
+       }
++      work.ready();
++      if (work.hasData()) {
++        encryptingLogFile.write(work.getData());
++        encryptingLogFile.flush();
++      }
++    } catch (Exception e) {
++      log.error(e, e);
++      work.exception = e;
+     }
+-
+-    synchronized (closeLock) {
+-      // use a different lock for close check so that adding to work queue does not need
+-      // to wait on walog I/O operations
+-
+-      if (closed)
++    synchronized(closeLock) {
++      if (closed) {
+         throw new LogClosedException();
+-      workQueue.add(work);
++      } else {
++        workQueue.add(work);
++      }
+     }
+-
++    
+     return new LoggerOperation(work);
+   }
+ 
+diff --git a/server/tserver/src/test/java/org/apache/accumulo/tserver/log/DecompressingInputStreamTest.java b/server/tserver/src/test/java/org/apache/accumulo/tserver/log/DecompressingInputStreamTest.java
+new file mode 100644
+index 0000000..e7d6698
+--- /dev/null
++++ b/server/tserver/src/test/java/org/apache/accumulo/tserver/log/DecompressingInputStreamTest.java
+@@ -0,0 +1,172 @@
++/*
++ * Licensed to the Apache Software Foundation (ASF) under one or more
++ * contributor license agreements.  See the NOTICE file distributed with
++ * this work for additional information regarding copyright ownership.
++ * The ASF licenses this file to You under the Apache License, Version 2.0
++ * (the "License"); you may not use this file except in compliance with
++ * the License.  You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++package org.apache.accumulo.tserver.log;
++
++import static org.junit.Assert.*;
++
++import java.io.ByteArrayInputStream;
++import java.io.ByteArrayOutputStream;
++import java.io.DataOutputStream;
++import java.io.IOException;
++import org.junit.Test;
++import org.xerial.snappy.Snappy;
++
++/**
++ * 
++ */
++public class DecompressingInputStreamTest {
++  private static byte hasValues = (byte) 1;
++  private static byte VAL1 = ((byte) (0x80 | hasValues));
++  private static byte VAL2 = ((byte) (0x80 | 0x40));
++  private static byte VAL3 = 0x05;
++  private static byte VAL4 = 0x03;
++  static final String LOG_FILE_HEADER_V3 = "--- Log File Header (v3) ---";
++
++  @Test
++  public void testRead() throws IOException {
++    byte[] b = buildArray(1);
++    ByteArrayInputStream input = new ByteArrayInputStream(b);
++    DecompressingInputStream in = new DecompressingInputStream(input);
++
++    assertTrue(in.read() == (VAL1 & 0xff));
++    assertTrue(in.read() == (VAL2 & 0xff));
++    assertTrue(in.read() == (VAL3));
++    assertTrue(in.read() == (VAL4));
++    assertTrue(in.read() == -1);
++    in.close();
++  }
++
++  @Test
++  public void testReadBytes() throws IOException {
++    byte[] b = buildArray(1);
++    ByteArrayInputStream input = new ByteArrayInputStream(b);
++    DecompressingInputStream in = new DecompressingInputStream(input);
++    byte data[] = new byte[4];
++
++    int num = in.read(data);
++    assertTrue(num == 4);
++    assertTrue(data[0] == VAL1);
++    assertTrue(data[1] == VAL2);
++    assertTrue(data[2] == VAL3);
++    assertTrue(data[3] == VAL4);
++
++    num = in.read(data);
++    assertTrue(num == -1);
++    in.close();
++  }
++
++  @Test
++  public void testReadMoreBytes() throws IOException {
++    byte[] b = buildArray(2);
++    ByteArrayInputStream input = new ByteArrayInputStream(b);
++    DecompressingInputStream in = new DecompressingInputStream(input);
++    byte data[] = new byte[3];
++    int num;
++    assertTrue(in.read() == (VAL1 & 0xff));
++    num = in.read(data, 1, 2);
++    assertTrue(num == 2);
++    assertTrue(data[0] == 0);
++    assertTrue(data[1] == (VAL2));
++    assertTrue(data[2] == VAL3);
++
++    data = new byte[5];
++
++    assertTrue(in.read() == 3);
++    num = in.read(data);
++    assertTrue(num == 4);
++    assertTrue(data[0] == (VAL1));
++    assertTrue(data[3] == VAL4);
++    assertTrue(data[4] == 0);
++    in.close();
++  }
++
++  @Test
++  public void testIncompleteFile() throws IOException {
++    byte[] b = buildBadArray(2);
++    ByteArrayInputStream input = new ByteArrayInputStream(b);
++    DecompressingInputStream in = new DecompressingInputStream(input);
++    byte data[] = new byte[8];
++    int num;
++
++    num = in.read(data);
++    assertTrue(num == 4);
++    assertTrue(data[0] == VAL1);
++    assertTrue(data[1] == VAL2);
++    assertTrue(data[2] == VAL3);
++    assertTrue(data[3] == VAL4);
++    assertTrue(data[4] == 0);
++    assertTrue(data[5] == 0);
++    assertTrue(data[6] == 0);
++    assertTrue(data[7] == 0);
++
++    in.close();
++  }
++
++  private static byte[] buildArray(int numBlocks) throws IOException {
++    ByteArrayOutputStream output = new ByteArrayOutputStream();
++    ByteArrayOutputStream tempOutPut = new ByteArrayOutputStream();
++    DataOutputStream data = new DataOutputStream(output);
++    for (int i = 0; i < numBlocks; i++) {
++
++      tempOutPut.write(VAL1);
++      tempOutPut.write(VAL2);
++      tempOutPut.write(VAL3);
++      tempOutPut.write(VAL4);
++
++      byte[] piece = Snappy.compress(tempOutPut.toByteArray());
++
++      data.writeInt(piece.length);
++      data.write(piece);
++      tempOutPut = new ByteArrayOutputStream();
++    }
++    data.flush();
++    data.close();
++    return output.toByteArray();
++  }
++
++  private static byte[] buildBadArray(int numBlocks) throws IOException {
++    ByteArrayOutputStream output = new ByteArrayOutputStream();
++    ByteArrayOutputStream tempOutPut = new ByteArrayOutputStream();
++    DataOutputStream data = new DataOutputStream(output);
++    for (int i = 1; i < numBlocks; i++) {
++
++      tempOutPut.write(VAL1);
++      tempOutPut.write(VAL2);
++      tempOutPut.write(VAL3);
++      tempOutPut.write(VAL4);
++
++      byte[] piece = Snappy.compress(tempOutPut.toByteArray());
++
++      data.writeInt(piece.length);
++      data.write(piece);
++      tempOutPut = new ByteArrayOutputStream();
++    }
++    tempOutPut.write(VAL1);
++    tempOutPut.write(VAL2);
++    tempOutPut.write(VAL3);
++    tempOutPut.write(VAL4);
++
++    byte[] piece = Snappy.compress(tempOutPut.toByteArray());
++
++    data.writeInt(piece.length + 8);
++    data.write(piece);
++
++    data.flush();
++    data.close();
++    return output.toByteArray();
++  }
++}
+-- 
+1.7.1
+

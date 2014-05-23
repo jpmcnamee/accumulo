@@ -19,6 +19,7 @@ package org.apache.accumulo.core.data;
 import java.io.DataInput;
 import java.io.DataOutput;
 import java.io.IOException;
+import java.io.OutputStream;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -936,6 +937,32 @@ public class Mutation implements Writable {
    */
   protected SERIALIZED_FORMAT getSerializedFormat() {
     return this.useOldDeserialize ? SERIALIZED_FORMAT.VERSION1 : SERIALIZED_FORMAT.VERSION2;
+  }
+  
+  public void write2(OutputStream out) throws IOException {
+    serialize();
+    byte hasValues = (values == null) ? 0 : (byte)1; 
+    out.write((byte)(0x80 | hasValues));
+    out.write(row.length);
+    //WritableUtils.writeVInt(out, row.length);
+    out.write(row);
+    out.write(data.length);
+    //WritableUtils.writeVInt(out, data.length);
+    out.write(data);
+    out.write(entries);
+    //WritableUtils.writeVInt(out, entries);
+    
+    if (hasValues > 0) {
+      out.write(values.size());
+      //WritableUtils.writeVInt(out, values.size());
+      for (int i = 0; i < values.size(); i++) {
+        byte val[] = values.get(i);
+        out.write(val.length);
+        //WritableUtils.writeVInt(out, val.length);
+        out.write(val);
+      }
+    }
+    
   }
 
 }
