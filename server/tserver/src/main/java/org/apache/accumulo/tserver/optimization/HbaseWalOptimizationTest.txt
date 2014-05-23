@@ -1,5 +1,10 @@
 package org.apache.hadoop.hbase.optimization;
 
+
+/*
+* This is a similar file to WalOptimizationTest that runs in Hbase and uses their dictionary compression algorithm
+*
+*/
 import java.io.BufferedOutputStream;
 import java.io.BufferedReader;
 import java.io.FileReader;
@@ -152,7 +157,7 @@ public class WalOptimizationTest {
 				//cellEncoder.write(kv);
 			}
 			if (i % 10 == 0) {
-				out.flush();
+				out.hsync();
 				//cellEncoder.flush();
 			}
 			
